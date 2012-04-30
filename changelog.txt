@@ -1,0 +1,7 @@
+script.module.xbmcswift2 Changelog
+==================================
+
+Version 0.1
+-----------
+
+- Initial rewrite
