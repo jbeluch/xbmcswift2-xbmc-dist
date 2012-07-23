@@ -8,7 +8,7 @@ from functools import wraps
 import xbmcswift2
 from xbmcswift2 import xbmc, xbmcaddon, xbmcplugin
 from xbmcswift2.cache import Cache, TimedCache
-from xbmcswift2.log import log
+from xbmcswift2 import log
 from xbmcswift2.constants import VIEW_MODES
 from common import Modes, DEBUG_MODES
 from request import Request
@@ -28,8 +28,8 @@ class XBMCMixin(object):
     _end_of_directory = False
     _memoized_cache = None
     _unsynced_caches = None
+    # TODO: Ensure above is implemented
     '''
-
     def cache(self, ttl_hours=24):
         '''View caching decorator. Currently must be closest to the
         view because route decorators don't wrap properly.
@@ -148,13 +148,23 @@ class XBMCMixin(object):
         view_mode_id'''
         xbmc.executebuiltin('Container.SetViewMode(%d)' % view_mode_id)
 
+    def notify(self, msg='', title=None, delay=5000, image=''):
+        '''Displays a temporary notification message to the user. If
+        title is not provided, the plugin name will be used. To have a
+        blank title, pass '' for the title argument. The delay argument
+        is in milliseconds.
+        '''
+        if not msg:
+            log.warning('Empty message for notification dialog')
+        if title is None:
+            title = self.plugin.name
+        xbmc.executebuiltin('XBMC.Notification("%s", "%s", "%s", "%s")' %
+                            (msg, title, delay, image))
+
     def set_resolved_url(self, url):
         item = xbmcswift2.ListItem(path=url)
         item.set_played(True)
         xbmcplugin.setResolvedUrl(self.handle, True, item.as_xbmc_listitem())
-
-        if self._mode in DEBUG_MODES:
-            display_video(item)
         return [item]
 
     def play_video(self, item, player=xbmc.PLAYER_CORE_DVDPLAYER):
@@ -162,9 +172,6 @@ class XBMCMixin(object):
             item = xbmcswift2.ListItem.from_dict(**item)
         item.set_played(True)
         xbmc.Player(player).play(item.get_path, item)
-
-        if self._mode in DEBUG_MODES:
-            display_video(item)
         return [item]
 
     def add_items(self, items):
@@ -172,6 +179,11 @@ class XBMCMixin(object):
         provided list should either be instances of xbmcswift2.ListItem,
         or regular dictionaries that will be passed to
         xbmcswift2.ListItem.from_dict. Returns the list of ListItems.
+
+        :param items: An iterable of items where each item is either a
+                      dictionary with keys/values suitable for passing to
+                      :meth:`xbmcswift2.ListItem.from_dict` or an instance of
+                      :class:`xbmcswift2.ListItem`.
         '''
         # For each item if it is not already a list item, we need to create one
         _items = []
@@ -199,7 +211,7 @@ class XBMCMixin(object):
         self._end_of_directory.
 
         Typically it is not necessary to call this method directly, as
-        calling plugin.finish will call this.
+        calling :meth:`~xbmcswift2.Plugin.finish` will call this method.
         '''
         if not self._end_of_directory:
             self._end_of_directory = True
@@ -215,15 +227,16 @@ class XBMCMixin(object):
         xbmcswift2.ListItem or a dictionary that will be passed to
         xbmcswift2.ListItem.from_dict().
 
-        sort_methods should be a list of valid XBMC sort_methods. The
-        reamaining keyword arguments are passed along to
-        xbmcplugin.endOfDirectory.
-
-        view_mode can either be an integer (or parseable integer
-        string) corresponding to a view_mode or the name of a type of
-        view. Currrently the only view type supported is 'thumbnail'.
-
-        Returns a list of all ListItems added to the XBMC interface.
+        :param items: an iterable of items where each item is either a
+            dictionary with keys/values suitable for passing to
+            :meth:`xbmcswift2.ListItem.from_dict` or an instance of
+            :class:`xbmcswift2.ListItem`.
+        :param sort_methods: a list of valid XBMC sort_methods. See
+            :attr:`xbmcswift2.SortMethod`.
+        :param view_mode: can either be an integer (or parseable integer
+            string) corresponding to a view_mode or the name of a type of view.
+            Currrently the only view type supported is 'thumbnail'.
+        :returns: a list of all ListItems added to the XBMC interface.
         '''
         # If we have any items, add them. Items are optional here.
         if items:
@@ -245,8 +258,7 @@ class XBMCMixin(object):
                 self.set_view_mode(view_mode_id)
 
         # Finalize the directory items
-        xbmcplugin.endOfDirectory(self.handle, succeeded,
-                                  update_listing, cache_to_disc)
+        self.end_of_directory(succeeded, update_listing, cache_to_disc)
 
         # Close any open caches which will persist them to disk
         if hasattr(self, '_unsynced_caches'):
@@ -256,20 +268,3 @@ class XBMCMixin(object):
 
         # Return the cached list of all the list items that were added
         return self.added_items
-
-
-#class XBMCProxyMixin(XBMCMixin):
-
-    #_PROXY_METHODS = [ 'add_items', 'end_of_directory', 'finish', 'cache_fn',
-        #'temp_fn', 'get_string', 'set_content', 'get_setting', 'set_setting',
-        #'open_settings', 'add_to_playlist', 'set_resolved_url', 'play_video',
-    #]
-    #def __get_item__(self, attr):
-        #if attr in Module._PROXY_METHODS:
-            #_validate_registered(self)
-            #return getattr(self.plugin, attr)
-        ##return normal
-        #pass
-
-    # TODO: write some code (metaclass?) that appends a registration
-    # required message to every method's __doc__  in _PROXY_METHODS

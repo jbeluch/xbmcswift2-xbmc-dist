@@ -1,5 +1,6 @@
 script.module.xbmcswift2 Changelog
 ==================================
+changes 
 
 Version 0.1
 -----------

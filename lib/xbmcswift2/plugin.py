@@ -1,3 +1,13 @@
+'''
+    xbmcswift2.plugin
+    -----------------
+
+    This module contains the Plugin class. This class handles all of the url
+    routing and interaction with XBMC for a plugin.
+
+    :copyright: (c) 2012 by Jonathan Beluch
+    :license: GPLv3, see LICENSE for more details.
+'''
 import os
 import sys
 import pickle
@@ -11,110 +21,170 @@ except ImportError:
     from cgi import parse_qs
 
 from listitem import ListItem
-from log import log
+from logger import log, setup_log
 from common import enum
 from common import clean_dict
 from urls import UrlRule, NotFoundException, AmbiguousUrlException
 from xbmcswift2 import (xbmc, xbmcgui, xbmcplugin, xbmcaddon, Request,)
-    
+
 from xbmcmixin import XBMCMixin
 from common import Modes, DEBUG_MODES
 
 
 class Plugin(XBMCMixin):
-    '''Encapsulates all the properties and methods necessary for running an
-    XBMC plugin.'''
+    '''The Plugin objects encapsulates all the properties and methods necessary
+    for running an XBMC plugin. The plugin instance is a central place for
+    registering view functions and keeping track of plugin state.
 
-    def __init__(self, name, addon_id, filepath, strings_fn=None):
-        '''Initialize a plugin object for an XBMC addon. The required
-        parameters are plugin name, addon_id, and filepath of the
-        python file (typically in the root directory.
+    Usually the plugin instance is created in the main addon.py file for the
+    plugin. Typical creation looks like this::
 
-        strings_fn can be a full filepath to a strings.xml used only
-        when testing plugins in the command line.
+        from xbmcswift2 import Plugin
+        plugin = Plugin('Hello XBMC', 'plugin.video.helloxbmc', __file__)
 
-        if testing=True, then the caller will be responsible for
-        passing a valid mode and arguments list to plugin.test().
-        '''
+    :param name: The name of the plugin, e.g. 'Academic Earth'.
+    :param addon_id: The XBMC addon ID for the plugin, e.g.
+                     'plugin.video.academicearth'
+    :param filepath: The path to the addon.py file. In typical usage, the
+                     builtin ``__file__`` variable can used.
+    '''
+
+    def __init__(self, name, addon_id, filepath):
         self._name = name
         self._filepath = filepath
         self._addon_id = addon_id
-        self._strings_fn = strings_fn
         self._routes = []
         self._view_functions = {}
         self._addon = xbmcaddon.Addon(id=self._addon_id)
-        self._current_items = []  # Keep track of added list items
 
-        # There will always be one request in each python thread...however it
-        # should be moved out of plugin...
+        # Keeps track of the added list items
+        self._current_items = []
+
+        # Gets initialized when self.run() is called
+        self._request = None
+
+        # A flag to keep track of a call to xbmcplugin.endOfDirectory()
+        self._end_of_directory = False
+
+        # The plugin's named logger
+        self._log = setup_log(addon_id)
+
+        # The path to the cache directory for the addon
         self._cache_path = xbmc.translatePath(
             'special://profile/addon_data/%s/.cache/' % self._addon_id)
 
+        # If we are runing in CLI, we need to load the strings.xml manually
+        # TODO: a better way to do this. Perhaps allow a user provided filepath
+        if xbmcswift2.CLI_MODE:
+            from xbmcswift2.mockxbmc import utils
+            utils.load_addon_strings(self._addon,
+                os.path.join(os.path.dirname(self._filepath), 'resources',
+                             'language', 'English', 'strings.xml'))
+
+    @property
+    def log(self):
+        '''The log instance for the plugin. Returns an instance of the
+        stdlib's ``logging.Logger``. This log will print to STDOUT when running
+        in CLI mode and will forward messages to XBMC's log when running in
+        XBMC.
+        '''
+        return self._log
+
     @property
     def id(self):
+        '''The id for the addon instance.'''
         return self._addon_id
 
     @property
     def cache_path(self):
+        '''A full path to the cache folder for this plugin's addon data.'''
         return self._cache_path
 
     @property
     def addon(self):
+        '''This plugin's underlying instance of xbmcaddon.Addon.'''
         return self._addon
 
     @property
     def added_items(self):
+        '''The list of currently added items.
+
+        Even after repeated calls to :meth:`~xbmcswift2.Plugin.add_items`, this
+        property will contain the complete list of added items.
+        '''
         return self._current_items
 
     def clear_added_items(self):
+        # TODO: This shouldn't be exposed probably...
         self._current_items = []
 
     @property
     def handle(self):
+        '''The current plugin's handle. Equal to ``plugin.request.handle``.'''
         return self.request.handle
 
     @property
     def request(self):
+        '''The current :class:`~xbmcswift2.Request`.
+
+        Raises an Exception if the request hasn't been initialized yet via
+        :meth:`~xbmcswift2.Plugin.run()`.
+        '''
+        if self._request is None:
+            raise Exception('It seems the current request has not been '
+                            'initialized yet. Please ensure that '
+                            '`plugin.run()` has been called before attempting '
+                            'to access the current request.')
         return self._request
 
     @property
     def name(self):
+        '''The addon's name'''
         return self._name
 
-    def _parse_args(self, mode=None, args=None):
+    def _parse_request(self, url=None, handle=None):
         '''Handles setup of the plugin state, including request
         arguments, handle, mode.
 
         This method never needs to be called directly. For testing, see
         plugin.test()
         '''
-        # Always XBMC Mode
-        url = sys.argv[0] + sys.argv[3]
-        handle = sys.arv[1]
-        self._request = Request(url, handle)
-
-    def run(self):
-        '''The main entry point for a plugin.'''
-        if xbmcswift2.CLI_MODE:
-            from xbmcswift2.cli import app
-            app.plugin_runner(self)
-        else:
-            self._parse_args()
-            request_handler = self._dispatch
-            log.debug('Dispatching %s to %s' %(self.request.path, request_handler.__name__))
-            return request_handler(self.request.path)
+        # To accomdate self.redirect, we need to be able to parse a full url as
+        # well
+        if url is None:
+            url = sys.argv[0]
+            if len(sys.argv) == 3:
+                url += sys.argv[2]
+        if handle is None:
+            handle = sys.argv[1]
+        return Request(url, handle)
 
     def register_module(self, module, url_prefix):
         '''Registers a module with a plugin. Requires a url_prefix that
-        will then enable calls to url_for.'''
+        will then enable calls to url_for.
+
+        :param module: Should be an instance `xbmcswift2.Module`.
+        :param url_prefix: A url prefix to use for all module urls,
+                           e.g. '/mymodule'
+        '''
         module._plugin = self
         module._url_prefix = url_prefix
         for func in module._register_funcs:
             func(self, url_prefix)
 
+    def cached_route(self, url_rule, name=None, options=None):
+        '''A decorator to add a route to a view and also apply caching.
+        '''
+        route_decorator = self.route(url_rule, name=name, options=options)
+        cache_decorator = self.cache()
+        def new_decorator(func):
+            return route_decorator(cache_decorator(func))
+        return new_decorator
+
     def route(self, url_rule, name=None, options=None):
         '''A decorator to add a route to a view. name is used to
         differentiate when there are multiple routes for a given view.'''
+        # TODO: change options kwarg to defaults
         def decorator(f):
             view_name = name or f.__name__
             self.add_url_rule(url_rule, f, name=view_name, options=options)
@@ -154,6 +224,7 @@ class Plugin(XBMCMixin):
 
         rule = self._view_functions[endpoint]
         if not rule:
+            # TODO: Make this a regular exception
             raise AmbiguousUrlException
 
         pathqs = rule.make_path_qs(items)
@@ -165,45 +236,28 @@ class Plugin(XBMCMixin):
                 view_func, items = rule.match(path)
             except NotFoundException:
                 continue
-            #return view_func(**items)
-            #TODO: allow returns just dictionaries that will be passed to
-            #      plugin.finish()
             log.info('Request for "%s" matches rule for function "%s"' % (path, view_func.__name__))
             listitems = view_func(**items)
+
+            # TODO: Verify the main UI handle is always 0, this check exists so
+            #       we don't erroneously call endOfDirectory for alternate
+            #       threads
+            # Allow the returning of bare dictionaries so we can cache view
+            if not self._end_of_directory and self.handle == 0:
+                listitems = self.finish(listitems)
             return listitems
         raise NotFoundException, 'No matching view found for %s' % path
 
     def redirect(self, url):
         '''Used when you need to redirect to another view, and you only
         have the final plugin:// url.'''
-        pass
+        # TODO: Should we be overriding self.request with the new request?
+        new_request = self._parse_request(url=url, handle=self.request.handle)
+        log.debug('Redirecting %s to %s' % (self.request.path, new_request.path))
+        return self._dispatch(new_request.path)
 
-
-
-'''
-Plugin - keeps track of views for the plugin and has a property pointing to the current request
-XBMCMixin - a bunch of stateless methods
-
-PluginResponse
-
-
-never should be plugin.add_items
-should be Response().add_items()
-
-
-plugin = Plugin('Hello XBMC', 'plugin.video.helloxbmc')
-
-plugin.route('/')
-def main_menu():
-    return {
-        'label': 'Welcome to new app!',
-    }
-
-plugin.route('/videos')
-def main_menu():
-    resp = PluginResponse()
-    resp.add_items(items)
-    # do more stuff
-    resp.add_items(items2)
-    return resp
-'''
+    def run(self, test=False):
+        '''The main entry point for a plugin.'''
+        self._request = self._parse_request()
+        log.debug('Handling incoming request for %s' % (self.request.path))
+        return self._dispatch(self.request.path)
