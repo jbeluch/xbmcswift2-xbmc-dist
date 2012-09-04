@@ -2,6 +2,12 @@ CHANGES
 =======
 
 
+Version 1.1.1
+-------------
+
+- Add license
+
+
 Version 1.1
 -----------
 
